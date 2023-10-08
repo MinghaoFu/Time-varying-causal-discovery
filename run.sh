@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICE=1 python main.py --latent --synthetic --train --num 5000 --batch_size 5000 --pi 10  --lr 1e-3 --epoch 20000 --tol 0.05

@@ -1,0 +1,9 @@
+results/
+data/
+visual/
+visual_resize/
+**/__pycache__/
+*.pth
+*.png
+*.pkl
+*.mp4
