@@ -1,7 +1,11 @@
 import torch
 import torch.nn as nn
+import networkx as nx
+import numpy as np
+import itertools
 
 from .base import check_tensor
+
 
 def top_k_abs_tensor(tensor, k):
     d = tensor.shape[0]
@@ -21,3 +25,112 @@ def top_k_abs_tensor(tensor, k):
     # result.scatter_(1, indices, values)
     # result = result.view(batch_size, d, d)
     return zero_tensor
+
+def is_dag(B):
+    """Check whether B corresponds to a DAG.
+
+    Args:
+        B (numpy.ndarray): [d, d] binary or weighted matrix.
+    """
+    return nx.is_directed_acyclic_graph(nx.DiGraph(B))
+
+def threshold_till_dag(B):
+    """Remove the edges with smallest absolute weight until a DAG is obtained.
+
+    Args:
+        B (numpy.ndarray): [d, d] weighted matrix.
+
+    Returns:
+        numpy.ndarray: [d, d] weighted matrix of DAG.
+        float: Minimum threshold to obtain DAG.
+    """
+    if is_dag(B):
+        return B, 0
+
+    B = np.copy(B)
+    # Get the indices with non-zero weight
+    nonzero_indices = np.where(B != 0)
+    # Each element in the list is a tuple (weight, j, i)
+    weight_indices_ls = list(zip(B[nonzero_indices],
+                                 nonzero_indices[0],
+                                 nonzero_indices[1]))
+    # Sort based on absolute weight
+    sorted_weight_indices_ls = sorted(weight_indices_ls, key=lambda tup: abs(tup[0]))
+
+    for weight, j, i in sorted_weight_indices_ls:
+        if is_dag(B):
+            # A DAG is found
+            break
+
+        # Remove edge with smallest absolute weight
+        B[j, i] = 0
+        dag_thres = abs(weight)
+
+    return B, dag_thres
+
+def postprocess(B, graph_thres=0.3):
+    """Post-process estimated solution:
+        (1) Thresholding.
+        (2) Remove the edges with smallest absolute weight until a DAG
+            is obtained.
+
+    Args:
+        B (numpy.ndarray): [d, d] weighted matrix.
+        graph_thres (float): Threshold for weighted matrix. Default: 0.3.
+
+    Returns:
+        numpy.ndarray: [d, d] weighted matrix of DAG.
+    """
+    B = np.copy(B)
+
+    B[np.abs(B) <= graph_thres] = 0    # Thresholding
+    B, _ = threshold_till_dag(B)
+
+    return B
+
+def is_markov_equivalent(B1, B2):
+    graph1 = nx.DiGraph()
+    graph1.add_edges_from(list(zip(np.nonzero(B1)[0], np.nonzero(B1)[1])))
+    
+    graph2 = nx.DiGraph()
+    graph2.add_edges_from(list(zip(np.nonzero(B2)[0], np.nonzero(B2)[1])))
+    
+    return nx.is_isomorphic(graph1, graph2)
+
+def bin_mat(B):
+    return np.where(B != 0, 1, 0)
+
+def markov_equivalence(B1, B2):
+    '''
+        Judge whether two matrices have the same v-structures. a->b<-c
+        row -> col
+    '''
+    def find_v_structures(adj_matrix):
+        G = nx.DiGraph(adj_matrix)
+        v_structures = []
+
+        for node in G.nodes():
+            parents = list(G.predecessors(node))
+            for pair in itertools.combinations(parents, 2):
+                if not G.has_edge(pair[0], pair[1]) and not G.has_edge(pair[1], pair[0]):
+                    v_structures.append((pair[0], node, pair[1]))
+
+        return v_structures
+    
+    def find_skeleton(B, v_structures):
+        inds = []
+        for v in v_structures:
+            inds.extend([(v[0], v[1]), (v[1], v[0]), (v[2], v[1]), (v[1], v[2])])
+        inds = np.array(inds)
+        B[inds[:, 0], inds[:, 1]] = 0
+        
+        return np.logical_or(B, B.T).astype(int)
+    
+    B1 = bin_mat(B1)
+    B2 = bin_mat(B2)
+    v_structures1 = find_v_structures(B1)
+    v_structures2 = find_v_structures(B2)
+    sk1 = find_skeleton(B1, v_structures1)
+    sk2 = find_skeleton(B2, v_structures1)
+
+    return set(v_structures1) == set(v_structures2) and sk1 == sk2

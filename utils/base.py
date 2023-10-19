@@ -17,13 +17,14 @@ from sklearn.utils._testing import assert_allclose
 from scipy import linalg, stats
 from tqdm import tqdm
 from time import time
+from lingam.utils import make_dot
 
 def makedir(path, remove_exist=False):
     if remove_exist and os.path.exists(path):
         shutil.rmtree(path)
     os.makedirs(path, exist_ok=True)
 
-def check_tensor(data):
+def check_tensor(data, dtype=None):
     if not torch.is_tensor(data):
         if isinstance(data, np.ndarray):
             data = torch.tensor(data)
@@ -31,9 +32,10 @@ def check_tensor(data):
             data = torch.tensor(np.array(data))
         else:
             raise ValueError("Unsupported data type. Please provide a list, NumPy array, or PyTorch tensor.")
-
+    if dtype is None:
+        dtype = data.dtype
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return data.to(device, dtype=torch.float)
+    return data.to(device, dtype=dtype)
 
 def covariance(x):
     mean = np.mean(x, axis=-1, keepdims=True)
@@ -238,3 +240,14 @@ def save_epoch_log(args, model, m_true, X, T_tensor, epoch):
     plt.ylabel('Value')
     plt.show()
     plt.savefig(os.path.join(save_epoch_dir, 'gradient_change.png'), format='png')
+    
+def make_dots(arr: np.array, save_path, name):
+    if len(arr.shape) > 2:
+        for i in arr.shape[0]:
+            dot = make_dot(arr[i])
+            dot.format = 'png'
+            dot.render(os.path.join(save_path, f'{name}_{i}'))
+    elif len(arr.shape) == 2:
+        dot = make_dot(arr)
+        dot.format = 'png'
+        dot.render(os.path.join(save_path, name))

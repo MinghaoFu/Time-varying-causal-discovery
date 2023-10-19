@@ -1,1 +1,13 @@
-CUDA_VISIBLE_DEVICE=1 python main.py --latent --synthetic --train --num 5000 --batch_size 5000 --pi 10  --lr 1e-3 --epoch 20000 --tol 0.05
+CUDA_VISIBLE_DEVICE=1 python main.py \
+--synthetic \
+--train \
+--num 10000 \
+--batch_size 5000 \
+--degree 1 \
+--pi 10 \
+--lr 1e-3 --epoch 500000 \
+--tol 0.05 \
+--d_L 1 --d_X 8 \
+--sparsity 0.01 \
+--graph_thres 0.3 \
+--seed 3 
