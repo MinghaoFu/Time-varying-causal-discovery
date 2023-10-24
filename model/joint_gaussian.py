@@ -13,25 +13,17 @@ class model(nn.Module):
         
     def forward(self, args, X_cov):
         B = self.B
-        I = check_tensor(torch.eye(args.d_X))
-        inv_I_minus_B = torch.inverse(I - B)
-        est_X_cov = torch.mm(torch.mm(inv_I_minus_B, torch.diag(self.EX_cov)), inv_I_minus_B.t())
-        # print(torch.norm(est_X_cov - X_cov).item())
-        #print('--- distance: {}'.format(torch.norm(est_X_cov - X_cov).item()))
-        
-        #
-        # L_term_cov = self.C @ self.EL_cov @ self.C.T + self.EX_cov# + 1e-6 * check_tensor(torch.eye(args.d_X))
-        # est_X_cov = torch.linalg.inv(I - self.B) @ torch.linalg.inv(L_term_cov) @ torch.linalg.inv(I - self.B).T
-
-        likelihood = model.log_gaussian_likelihood(self.B, torch.diag(self.EX_cov), args.num, X_cov)
+        self.est_X_cov, likelihood = model.log_gaussian_likelihood(B, torch.diag(self.EX_cov), args.num, X_cov)
         # likelihood = torch.norm(est_X_cov - X_cov, p=1)
-
-        sparsity =  args.sparsity * (torch.norm(B, p=1) + torch.nonzero(B).size(0))
+        sparsity = torch.norm(B, p=1) #+ torch.nonzero(B).size(0)
+        mat_exp = torch.matrix_exp(B * B)
+        dag = torch.sum(torch.diagonal(mat_exp, dim1=-2, dim2=-1)) - args.d_X
         loss = {}
         loss['likelihood'] = likelihood
         loss['sparsity'] = sparsity
-        loss['score'] = sparsity + likelihood
-
+        loss['dag'] = dag
+        loss['score'] = likelihood + args.sparsity * sparsity + args.DAG * dag
+        
         return loss
     
     @staticmethod
@@ -40,8 +32,9 @@ class model(nn.Module):
 
         I = check_tensor(torch.eye(d_X))
         inv_I_minus_B = torch.inverse(I - B)
-        est_X_cov = torch.mm(torch.mm(inv_I_minus_B, EX_cov), inv_I_minus_B.t())
-        
-        return 0.5 * (torch.slogdet(est_X_cov)[1] + \
+        est_X_cov = inv_I_minus_B.T @ EX_cov @ inv_I_minus_B
+        if torch.det(est_X_cov) < -1:
+            print(torch.det(est_X_cov))
+        return est_X_cov, 0.5 * (torch.slogdet(est_X_cov)[1] + \
             torch.trace(torch.mm(torch.inverse(est_X_cov), X_cov)) + \
                 d_X * torch.log(check_tensor(torch.tensor(torch.pi * 2))))

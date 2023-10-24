@@ -241,13 +241,14 @@ def save_epoch_log(args, model, m_true, X, T_tensor, epoch):
     plt.show()
     plt.savefig(os.path.join(save_epoch_dir, 'gradient_change.png'), format='png')
     
-def make_dots(arr: np.array, save_path, name):
+def make_dots(arr: np.array, labels, save_path, name):
     if len(arr.shape) > 2:
         for i in arr.shape[0]:
             dot = make_dot(arr[i])
             dot.format = 'png'
             dot.render(os.path.join(save_path, f'{name}_{i}'))
     elif len(arr.shape) == 2:
-        dot = make_dot(arr)
+        dot = make_dot(arr, labels=labels)
         dot.format = 'png'
         dot.render(os.path.join(save_path, name))
+        os.remove(os.path.join(save_path, name)) # remove digraph

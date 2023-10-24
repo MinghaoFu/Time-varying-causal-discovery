@@ -98,6 +98,7 @@ def main():
     # loss function, i.e. {'L1': 0.01, 'dag': 0.001, 'grad': 0.1, 'flat': 0.1}
     parser.add_argument('--loss', type=dict, default={'L1': 0.005, 'dag': 0.1, 'flat': 0.0}, help='Embedding dim for t')
     parser.add_argument('--sparsity', type=float, default=0.8, help='Lambda sparsity.')
+    parser.add_argument('--DAG', type=float, default=0.8, help='Lambda DAG.')
     # save
     parser.add_argument('--save_dir', type=str, default='./results/{}'.format(datetime.now().strftime("%Y-%m-%d_%H-%M-%S")), help='Saving directory')
     # generate data
@@ -108,6 +109,7 @@ def main():
     parser.add_argument('--d_L', type=int, default=1, help='Number of latent variable')
     parser.add_argument('--d_X', type=int, default=10, help='Number of measured variable')
     parser.add_argument('--degree', type=int, default=2, help='Graph degree')
+    parser.add_argument('--condition', type=str, default='necessary', help='Causal graph condition')
     # training lr
     parser.add_argument('--decay_type', type=str, default='step', choices=['step', 'multi step', 'cosine'], help='Learning rate')
     parser.add_argument('--optimizer', type=str, default='ADAM', choices=['ADAM', 'SGD', 'RMSprop'], help='Optimizer')
@@ -127,6 +129,7 @@ def main():
     
     args = parser.parse_args()
     
+    torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         device = torch.device('cuda')  # GPU available
     else:
@@ -144,22 +147,26 @@ def main():
         X_cov = torch.cov(X.T)
         if args.d_L > 0:
             C = check_tensor(dataset.C, dtype=torch.float32)
-            est_X_cov = torch.mm(torch.mm(inv_I_minus_B.t(), torch.mm(C, C.t()) + I), inv_I_minus_B)
-            model = latent_joint_gaussian(args, B, C)
-            nll = model.log_gaussian_likelihood(B, C, check_tensor(torch.eye(args.d_X)), check_tensor(torch.eye(args.d_L)), args.num, X_cov)
+            BC = np.concatenate((np.zeros((1, args.d_L + args.d_X)), np.concatenate((C, B), axis=1)), axis=0)
+            # est_X_cov = torch.mm(torch.mm(inv_I_minus_B.t(), torch.mm(C, C.t()) + I), inv_I_minus_B)
+            model = latent_joint_gaussian(args)
+            est_X_cov, nll = model.log_gaussian_likelihood(B, C, check_tensor(torch.eye(args.d_X)), check_tensor(torch.eye(args.d_L)), args.num, X_cov)
         elif args.d_L == 0:
             est_X_cov = torch.mm(inv_I_minus_B.t(), inv_I_minus_B)
             model = joint_gaussian(args)
-            nll = model.log_gaussian_likelihood(B, check_tensor(torch.eye(args.d_X)), args.num, X_cov)
+            est_X_cov, nll = model.log_gaussian_likelihood(B, check_tensor(torch.eye(args.d_X)), args.num, X_cov)
         
         graph_B = nx.DiGraph()
         graph_B.add_edges_from(np.nonzero(B))
-        print('--- Estimated covariance (by parameters) - true covariance = {}'.format(torch.norm(est_X_cov - X_cov).item()))
+        print('--- Population covariance - sample covariance = {}'.format(torch.norm(est_X_cov - X_cov).item()))
         print('--- True nll: {}'.format(nll.item()))
 
         if torch.cuda.is_available():
             model = model.cuda()
-        optimizer = make_optimizer(model, args)#optim.SGD(model.parameters(), lr=args.lr)
+        if args.optimizer == 'ADAM':
+            optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=args.betas, eps=args.epsilon, weight_decay=0) # make_optimizer(model, args)
+        elif args.optimizer == 'SGD':
+            optimizer = optim.SGD(model.parameters(), lr=args.lr)
 
         for epoch in range(args.epoch):
             model.train()
@@ -177,22 +184,34 @@ def main():
                 model.B.grad[i, i] = 0
             
             optimizer.step()
-            
-            est_B = model.B.cpu().detach().numpy()
-            est_B_postprocess = postprocess(est_B, graph_thres=args.graph_thres)
-            
 
             if (epoch % (args.epoch // 100) == 0): # or markov_equivalence(dataset.B.T, est_B_postprocess.T)
-                print(f'--- Epoch {epoch}, Loss: { {l: loss[l].item() for l in loss.keys()} }')
-                print(dataset.B)
-                print(est_B_postprocess)
-                if args.d_L != 0:
-                    print(model.C.cpu().detach().numpy())
+                model.eval()
+                print(f'--- Epoch {epoch}, Loss: { {l: loss[l].item() for l in loss.keys()} }') #lr: {optimizer.get_lr()}
+                print('--- Estimated covariance - sample covariance = {}'.format(torch.norm(model.est_X_cov - X_cov).item()))
+                est_B = model.B.cpu().detach().numpy()
+                est_B_postprocess = postprocess(est_B, graph_thres=args.graph_thres)
+                est_EX_cov = model.EX_cov.cpu().detach().numpy()
                 fig_dir = os.path.join(args.save_dir, 'figs')
                 makedir(fig_dir)
-                make_dots(dataset.B, fig_dir, 'B')
-                make_dots(est_B, fig_dir, 'est_B')
-                make_dots(est_B_postprocess, fig_dir, 'est_B_postprocess')
+                B_labels = [f'M{i}' for i in range(dataset.B.shape[1])]
+                make_dots(dataset.B, B_labels, fig_dir, 'B')
+                make_dots(est_B, B_labels, fig_dir, 'est_B')
+                make_dots(est_B_postprocess, B_labels, fig_dir, 'est_B_postprocess')
+                # print(dataset.B)
+                # print(est_B_postprocess)
+                # print(C, est_C)
+                if args.d_L != 0:
+                    L_labels = [f'L{i}' for i in range(dataset.C.shape[1])]
+                    est_C = model.C.cpu().detach().numpy()
+                    est_C[np.abs(est_C) <= args.graph_thres] = 0
+                    est_EL_cov = model.EL_cov
+                    est_BC = np.concatenate((np.zeros((1, args.d_L + args.d_X)), np.concatenate((est_C, est_B_postprocess), axis=1)), axis=0)
+                    make_dots(BC, L_labels + B_labels, fig_dir, 'BC')
+                    make_dots(est_BC, L_labels + B_labels, fig_dir, 'est_BC')
+                
+                
+                
         
     else:
         if args.synthetic:
@@ -216,7 +235,7 @@ def main():
         if args.ddp:
             model = nn.DataParallel(model, range(2))
         model = model.to(device)
-        optimizer = make_optimizer(model, args) #optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0) #make_optimizer(model, args)
         
         if args.train:
             criterion = golem_loss(args)
