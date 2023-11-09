@@ -1,14 +1,15 @@
 CUDA_VISIBLE_DEVICE=1 python main.py \
 --synthetic \
 --train \
---num 100000 \
+--num 10000 \
 --batch_size 5000 \
 --degree 1 \
 --pi 10 \
---lr 2e-4 --epoch 1000000 \
+--lr 2e-4 --epoch 200000 \
+--condition non-linear --time_varying \
 --tol 0.05 \
---d_L 1 --d_X 10 \
---sparsity 0.1 --DAG 1.0 \
+--max_d_L 4 --d_L 2 --d_X 8 \
+--sparsity_M 0.01 --sparsity_L 0.0005 --DAG 1.0 \
 --graph_thres 0.3 \
---seed 18 \
+--seed 33 \
 --optimizer ADAM

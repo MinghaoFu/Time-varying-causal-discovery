@@ -6,6 +6,25 @@ import itertools
 
 from .base import check_tensor
 
+def sample_n_different_integers(n, low, high, random_seed=None):
+    # Create a random number generator with a specified random seed (or without)
+    if random_seed is not None:
+        rng = np.random.default_rng(random_seed)
+    else:
+        rng = np.random.default_rng()
+
+    # Check if the interval contains enough unique integers
+    if high - low < n:
+        raise ValueError("Interval does not contain enough unique integers.")
+
+    # Create an array of all integers in the interval
+    all_integers = np.arange(low, high)
+
+    # Shuffle the integers and take the first 'n' as the sample
+    rng.shuffle(all_integers)
+    sampled_integers = all_integers[:n]
+    
+    return sampled_integers
 
 def top_k_abs_tensor(tensor, k):
     d = tensor.shape[0]
@@ -88,19 +107,18 @@ def postprocess(B, graph_thres=0.3):
 
     return B
 
-def is_markov_equivalent(B1, B2):
-    graph1 = nx.DiGraph()
-    graph1.add_edges_from(list(zip(np.nonzero(B1)[0], np.nonzero(B1)[1])))
-    
-    graph2 = nx.DiGraph()
-    graph2.add_edges_from(list(zip(np.nonzero(B2)[0], np.nonzero(B2)[1])))
-    
-    return nx.is_isomorphic(graph1, graph2)
+def is_dag(B):
+    """Check whether B corresponds to a DAG.
+
+    Args:
+        B (numpy.ndarray): [d, d] binary or weighted matrix.
+    """
+    return nx.is_directed_acyclic_graph(nx.DiGraph(B))
 
 def bin_mat(B):
     return np.where(B != 0, 1, 0)
 
-def markov_equivalence(B1, B2):
+def is_markov_equivalent(B1, B2):
     '''
         Judge whether two matrices have the same v-structures. a->b<-c
         row -> col
@@ -134,3 +152,15 @@ def markov_equivalence(B1, B2):
     sk2 = find_skeleton(B2, v_structures1)
 
     return set(v_structures1) == set(v_structures2) and sk1 == sk2
+
+def random_zero_array(arr, zero_ratio, constraint=None):
+    '''
+        Randomly set some elements in an array to 0
+    '''
+    if constraint is None:
+        original_shape = arr.shape
+        arr = arr.flatten()
+        inds = np.random.choice(np.arange(len(arr)), size=int(len(arr) * zero_ratio), replace=False)
+        arr[inds] = 0
+        result = arr.reshape(original_shape)
+    return result
