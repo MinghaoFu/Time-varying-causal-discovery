@@ -124,6 +124,7 @@ def generate_mixing_matrix(d_sources: int, d_data=None, lin_type='uniform', cond
             cond_thresh = np.percentile(cond_list, 25)  # only accept those below 25% percentile
 
         gen_mat = _gen_matrix if not staircase else _gen_matrix_staircase
+        
         A = gen_mat(d_sources, d_data, dtype)
         while np.linalg.cond(A) > cond_thresh:
             A = gen_mat(d_sources, d_data, dtype)
@@ -133,6 +134,8 @@ def generate_mixing_matrix(d_sources: int, d_data=None, lin_type='uniform', cond
     
     return A
 
+def generate_statationary_sources():
+    pass
 
 def generate_nonstationary_sources(n_per_seg: int, n_seg: int, d: int, prior='gauss', var_bounds=np.array([0.5, 3]),
                                    dtype=np.float32, uncentered=False, centers=None, staircase=False):
@@ -200,7 +203,7 @@ def generate_nonstationary_sources(n_per_seg: int, n_seg: int, d: int, prior='ga
     return sources, labels, m, L
 
 
-def generate_data(n_per_seg, n_seg, d_sources, d_data=None, adj_mat=False, n_layers=3, prior='gauss', activation='lrelu', batch_size=0,
+def generate_data(n_per_seg, n_seg, d_sources, d_data=None, n_layers=3, prior='gauss', activation='lrelu', batch_size=0,
                   seed=10, slope=.1, var_bounds=np.array([0.5, 3]), lin_type='uniform', n_iter_4_cond=1e4,
                   dtype=np.float32, noisy=0, uncentered=False, centers=None, staircase=False, discrete=False,
                   one_hot_labels=True, repeat_linearity=False):
@@ -231,6 +234,7 @@ def generate_data(n_per_seg, n_seg, d_sources, d_data=None, adj_mat=False, n_lay
     @rtype: tuple
 
     """
+        
     if seed is not None:
         np.random.seed(seed)
 
@@ -256,38 +260,28 @@ def generate_data(n_per_seg, n_seg, d_sources, d_data=None, adj_mat=False, n_lay
         raise ValueError('incorrect non linearity: {}'.format(activation))
 
     # Mixing time!
-
-    # if not repeat_linearity:
-    #     X = S.copy()
-    #     for nl in range(n_layers):
-    #         A = generate_mixing_matrix(X.shape[1], d_data, lin_type=lin_type, n_iter_4_cond=n_iter_4_cond, dtype=dtype,
-    #                                    staircase=staircase)
-    #         if nl == n_layers - 1:
-    #             X = np.dot(X, A)
-    #         else:
-    #             X = act_f(np.dot(X, A))
     if not repeat_linearity:
-        X = np.zeros((S.shape[0], d_data))
-        if adj_mat is False:
-            adj_mat = np.ones((d_data, d_sources))
-            zero_inds = np.random.choice(np.arange(d_data * d_sources), size=int(d_data * d_sources * 0.4), replace=False)
-            adj_mat[zero_inds] = 0
-            adj_mat = adj_mat.reshape((d_data, d_sources))
-        adj_mat = adj_mat.astype(int)
-        for i in range(S.shape[1]):
-            h = S[:, i:i+1]
+        C_mask = np.random.uniform(-1.5, 1.5, size=(S.shape[0], d_data, d_sources)) + np.repeat(np.expand_dims(np.cos(np.arange(S.shape[0]) / 100), axis=1), d_sources*d_data, axis=1).reshape(-1, d_data, d_sources)
+        C_mask[np.abs(C_mask) < 0.5] = 0
+        C_mask[np.abs(C_mask) >= 0.5] = 1
+        h = np.expand_dims(S, axis=1) * C_mask
+        X = []
+        for i in range(d_data): 
+            # need a mask matrix here
+            curr_input = h[:, i, :]
             for nl in range(n_layers):
-                A = generate_mixing_matrix(h.shape[1], d_data, lin_type=lin_type, n_iter_4_cond=n_iter_4_cond, dtype=dtype,
-                                        staircase=staircase)
                 if nl == n_layers - 1:
-                    h = np.dot(h, A)
+                    A = generate_mixing_matrix(curr_input.shape[1], 1, lin_type=lin_type, n_iter_4_cond=n_iter_4_cond, dtype=dtype,
+                                        staircase=staircase)
+                    output = curr_input @ A
                 else:
-                    h = act_f(np.dot(h, A))
+                    A = generate_mixing_matrix(curr_input.shape[1], 8, lin_type=lin_type, n_iter_4_cond=n_iter_4_cond, dtype=dtype,
+                                        staircase=staircase)
+                    curr_input = act_f(curr_input @ A)
 
-            zero_inds = np.random.choice(np.arange(h.shape[1]), size=int(h.shape[1] * 0.4), replace=False)
-
-            h[:, adj_mat[:, i]] = 0
-            X += h
+            X.append(output)
+            
+        X = np.concatenate(X, axis=1)
     else:
         assert n_layers > 1  # suppose we always have at least 2 layers. The last layer doesn't have a non-linearity
         A = generate_mixing_matrix(d_sources, d_data, lin_type=lin_type, n_iter_4_cond=n_iter_4_cond, dtype=dtype)
@@ -312,7 +306,7 @@ def generate_data(n_per_seg, n_seg, d_sources, d_data=None, adj_mat=False, n_lay
     if not batch_size:
         if one_hot_labels:
             U = to_one_hot([U], m=n_seg)[0]
-        return S, X, U, M, L, adj_mat
+        return S, X, U, M, L, C_mask
     else:
         idx = np.random.permutation(n)
         Xb, Sb, Ub, Mb, Lb = [], [], [], [], []
@@ -325,7 +319,7 @@ def generate_data(n_per_seg, n_seg, d_sources, d_data=None, adj_mat=False, n_lay
             Lb += [L[idx][c * batch_size:(c + 1) * batch_size]]
         if one_hot_labels:
             Ub = to_one_hot(Ub, m=n_seg)
-        return Sb, Xb, Ub, Mb, Lb, adj_mat
+        return Sb, Xb, Ub, Mb, Lb, C_mask
 
 
 def save_data(path, *args, **kwargs):

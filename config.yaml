@@ -1,0 +1,65 @@
+train: true
+pretrain: true
+ddp: true
+pre_epoch: 0
+epoch: 1000
+init_epoch: 200
+batch_size: 100000
+lag: 10
+synthetic: true
+time_varying: true
+sparse: true
+noise_type: "gaussian_ev"
+seed: 69
+gt_init: true
+embedding_dim: 5
+spectral_norm: true
+tol: 0
+graph_thres: 0.3
+DAG: 0.8
+save_dir: "./results/"
+num: 1000
+scale: 0.5
+pi: 10
+distance: 2
+max_d_L: 1
+d_L: 2
+d_X: 10
+degree: 2
+condition: "non-linear"
+decay_type: "step"
+optimizer: "ADAM"
+weight_decay: 0.0
+lr: 1.e-3
+gradient_noise: null
+step_size: 1000
+gamma: 0.5
+decay: [200, 400, 800, 1000]
+betas: [0.9, 0.999]
+epsilon: 1.e-8
+momentum: 0.9
+encoder_max_grad_norm: 1.0
+decoder_max_grad_norm: 1.0
+time_embedding_dim: 16
+encoder_hidden_dim: 32
+encoder_layers_before_gru: [32, 64, 32]
+encoder_gru_hidden_size: 128
+encoder_layers_after_gru: [32, 64, 32]
+state_embedding_dim: 64
+state_loss_coeff: 1.0
+state_decoder_layers: [64, 32]
+state_pred_type: "deterministic"
+
+assume_time_lag: false
+latent_embed_dim: 32
+decoder_layer_dims: [64, 128, 64, 32]
+n_mlp_layers: 3
+vae_subsample_elbos: 128
+kl_coeff: 0.1
+reconstruction_loss_coeff: 1.0
+sparsity_Bt: 0.001
+sparsity_Ct: 0.001
+sparsity_Ct_1: 0.001
+
+load_data: true
+data_path: "./data/synthetic"

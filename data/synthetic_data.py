@@ -4,7 +4,7 @@ import igraph as ig
 import networkx as nx
 import numpy as np
 
-from utils import sample_n_different_integers, is_dag
+from utils import sample_n_different_integers, is_dag, threshold_till_dag, makedir
 from .generate_non_linear_data import generate_data as generate_non_linear_data
 
 class SyntheticDataset:
@@ -20,7 +20,7 @@ class SyntheticDataset:
     """
     _logger = logging.getLogger(__name__)
 
-    def __init__(self, n, max_d_L, d_L, d_X, graph_type, condition, degree, noise_type, C_scale, B_scale, seed=1):
+    def __init__(self, args, n, max_d_L, d_L, d_X, graph_type, condition, degree, noise_type, C_scale, B_scale, seed=1):
         """Initialize self.
 
         Args:
@@ -32,7 +32,7 @@ class SyntheticDataset:
             B_scale (float): Scaling factor for range of B.
             seed (int): Random seed. Default: 1.
         """
-        
+        self.args = args
         self.n = n
         self.max_d_L = max_d_L
         self.d_L = d_L
@@ -53,10 +53,18 @@ class SyntheticDataset:
 
     def _setup(self):
         """Generate B_bin, B and X."""
+        if self.args.load_data == True:
+            self.Bs_bin = np.load(self.args.data_path + 'Bs_bin.npy')
+            self.Bs = np.load(self.args.data_path + 'Bs.npy')
+            self.X = np.load(self.args.data_path + 'X.npy')
+            self.L = np.load(self.args.data_path + 'L.npy')
+            self.Cs = np.load(self.args.data_path + 'Cs.npy')
+            self.BCs = np.load(self.args.data_path + 'BCs.npy')
+            self.Xh = np.load(self.args.data_path + 'Xh.npy')
+            return
+        
         if self.condition == 'non-linear':
-            self.B_bin = SyntheticDataset.simulate_chain_graph(self.d_X, self.rs)
-            self.C_bin = np.ones((self.d_X, self.max_d_L))
-            # each L has at least 2 pure children
+            self.Bs_bin = SyntheticDataset.simulate_time_varying_graph(self.d_X, self.n)
             
         elif self.condition == 'sufficient':
             '''
@@ -101,15 +109,28 @@ class SyntheticDataset:
         else:
             raise ValueError(self.condition)
         
-        assert is_dag(self.B_bin)
-        
-        self.B = SyntheticDataset.simulate_weight(self.B_bin, self.B_ranges, self.rs)
-        I = np.eye(self.d_X)
+        #assert is_dag(self.B_bin)
+        # TODO check if B_bin is DAG
         
         if self.condition == 'non-linear':
+            self.Bs = SyntheticDataset.simulate_weight(self.Bs_bin, self.B_ranges, self.rs)
+            I = np.repeat(np.eye(self.d_X)[np.newaxis, :, :], self.n, axis=0)
             self.EX_cov = np.eye(self.d_X) # simulate noisy=1 as below
-            self.L, self.Xh, Ub, Mb, Lb, self.C = generate_non_linear_data(1, self.n, self.d_L, self.d_X, adj_mat=self.C_bin, noisy=1)
-            self.X = self.Xh @ np.linalg.inv(I - self.B)
+            self.L, self.Xh, Ub, Mb, Lb, self.Cs = generate_non_linear_data(1, self.n, self.d_L, self.d_X, noisy=1)
+            self.BCs = np.concatenate((np.zeros((self.n, self.d_L, self.d_L + self.d_X)), np.concatenate((self.Cs, self.Bs), axis=2)), axis=1)
+            inverses = np.empty_like(self.Bs)
+            for i in range(self.Bs.shape[0]):
+                inverses[i] = np.linalg.pinv(self.Bs[i])
+            self.X = np.squeeze(np.matmul(np.expand_dims(self.Xh, axis=1), inverses), axis=1)
+            makedir(self.args.data_path, remove_exist=True)
+            np.save(self.args.data_path + 'Bs_bin.npy', self.Bs_bin)
+            np.save(self.args.data_path + 'Bs.npy', self.Bs)
+            np.save(self.args.data_path + 'X.npy', self.X)
+            np.save(self.args.data_path + 'L.npy', self.L)
+            np.save(self.args.data_path + 'Cs.npy', self.Cs)
+            np.save(self.args.data_path + 'BCs.npy', self.BCs)
+            np.save(self.args.data_path + 'Xh.npy', self.Xh)
+            
         else:
             self.EL_cov = np.eye(self.max_d_L)
             self.L = self.rs.multivariate_normal(np.zeros(self.max_d_L), self.EL_cov, size=self.n)
@@ -119,7 +140,7 @@ class SyntheticDataset:
             self.EX = np.random.multivariate_normal(np.zeros(self.d_X), self.EX_cov, size=self.n)
             self.X = ((self.C @ self.L.T).T + self.EX) @ np.linalg.inv(I - self.B)
             
-        print(f'--- norm(estimated covariance - data covariance) = {self.cal_population_sample_cov()}')
+        #print(f'--- norm(estimated covariance - data covariance) = {self.cal_population_sample_cov()}')
             
     def cal_population_sample_cov(self):
         X_cov = np.cov(self.X.T)
@@ -132,6 +153,22 @@ class SyntheticDataset:
             est_X_cov = np.linalg.inv(I - self.B).T @ (self.C @ self.C.T + self.EX_cov) @ np.linalg.inv(I - self.B)
             dis = np.linalg.norm(est_X_cov - X_cov)
         return dis
+    
+    @staticmethod 
+    def simulate_time_varying_graph(d, n):
+        Bs = np.repeat(np.random.uniform(-0.45, 0.45, size=(d, d))[None, :, :], n, axis=0) + 0.1 * np.expand_dims(np.cos(np.arange(n) / 100), axis=(1,2))
+        Bs[np.abs(Bs) < 0.5] = 0
+        Bs[np.abs(Bs) >= 0.5] = 1
+        return Bs
+        
+    @staticmethod
+    def simulate_sparse_graph(d, edge_ub, rs=np.random.RandomState(1)):
+        G = nx.gnp_random_graph(d, edge_ub, directed=True)
+        while not nx.is_directed_acyclic_graph(G):
+            G = nx.gnp_random_graph(d, edge_ub, directed=True)
+        B = nx.adjacency_matrix(G).toarray()
+        
+        return B
     
     @staticmethod
     def simulate_chain_graph(d, rs=np.random.RandomState(1)):
@@ -375,7 +412,7 @@ def generate_data(args):
     B_scale = 1.0
     noise_type = args.noise_type
 
-    dataset = SyntheticDataset(n, max_d_L, d_L, d_X, graph_type, condition, degree,
+    dataset = SyntheticDataset(args, n, max_d_L, d_L, d_X, graph_type, condition, degree,
                                noise_type, C_scale, B_scale, seed=args.seed)
     return dataset
 

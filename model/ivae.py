@@ -6,12 +6,36 @@ from torch import distributions as dist
 from torch import nn
 from torch.nn import functional as F
 
-
 def weights_init(m):
     if isinstance(m, nn.Linear):
         nn.init.xavier_uniform_(m.weight.data)
-
-
+        
+class time_varying_linear(nn.Module):
+    '''
+        Input: [batch_size, input_dim], [batch_size, 1]
+        Output: [batch_size, output_dim]
+        If batch size of input > 1, moving average is used to assume that the function parameters are the same on this batch.
+    '''
+    def __init__(self, input_dim, output_dim, slope=0.2, moving_average=True):
+        super().__init__()
+        self.moving_average = moving_average
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.hidden_dim = (input_dim + output_dim) // 2
+        self.fc = nn.Linear(input_dim, output_dim)
+        self.fc_t = nn.Sequential(
+            nn.Linear(1, self.hidden_dim),
+            nn.LeakyReLU(negative_slope=slope),
+            nn.Linear(self.hidden_dim, input_dim * (output_dim + 1)),
+        )
+        
+    def forward(self, x, t):
+        t = t.mean(dim=0).reshape(-1, 1)
+        h = self.fc_t(t)
+        self.fc.weight.data = h[:, :self.input_dim * self.output_dim].view(self.fc.weight.shape)
+        self.fc.bias.data = h[:, -self.output_dim:].view(self.fc.bias.shape)
+        return self.fc(x)
+    
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim, n_layers, activation='none', slope=.1, device='cpu'):
         super().__init__()
@@ -70,7 +94,6 @@ class MLP(nn.Module):
                 h = self._act_f[c](self.fc[c](h))
         return h
 
-
 class Dist:
     def __init__(self):
         pass
@@ -80,7 +103,6 @@ class Dist:
 
     def log_pdf(self, *args, **kwargs):
         pass
-
 
 class Normal(Dist):
     def __init__(self, device='cpu'):
@@ -163,6 +185,7 @@ class GaussianMLP(nn.Module):
                  fixed_var=None):
         super().__init__()
         self.distribution = Normal(device=device)
+
         if fixed_mean is None:
             self.mean = MLP(input_dim, output_dim, hidden_dim, n_layers, activation=activation, slope=slope,
                             device=device)
@@ -180,14 +203,8 @@ class GaussianMLP(nn.Module):
     def log_pdf(self, x, *params, **kwargs):
         return self.distribution.log_pdf(x, *params, **kwargs)
 
-
-    def forward(self, *input):
-        if len(input) > 1:
-            x = torch.cat(input, dim=1)
-        else:
-            x = input[0]
-        return self.mean(x), self.log_var(x).exp()
-
+    def forward(self, x, u):
+        return self.mean(x), self.log_var(x, u).exp()
 
 class ModularIVAE(nn.Module):
     def __init__(self, latent_dim, data_dim, aux_dim, prior=None, decoder=None, encoder=None,
@@ -203,11 +220,11 @@ class ModularIVAE(nn.Module):
         self.slope = slope
         self.anneal_params = anneal
 
-        if prior is None:
-            self.prior = GaussianMLP(aux_dim, latent_dim, hidden_dim, n_layers, activation=activation, slope=slope,
-                                     device=device, fixed_mean=0)
-        else:
-            self.prior = prior
+        # if prior is None:
+        #     self.prior = GaussianMLP(aux_dim, latent_dim, hidden_dim, n_layers, activation=activation, slope=slope,
+        #                              device=device, fixed_mean=0)
+        # else:
+        #     self.prior = prior
 
         if decoder is None:
             self.decoder = GaussianMLP(latent_dim, data_dim, hidden_dim, n_layers, activation=activation, slope=slope,
@@ -228,12 +245,13 @@ class ModularIVAE(nn.Module):
     def forward(self, x, u):
         encoder_params = self.encoder(x, u)
         z = self.encoder.sample(*encoder_params)
-        decoder_params = self.decoder(z)
-        prior_params = self.prior(u)
-        return decoder_params, encoder_params, prior_params, z
+        decoder_params = self.decoder(z, u)
+        #prior_params = self.prior(u)
+        return decoder_params, encoder_params, z
 
     def elbo(self, x, u):
         decoder_params, encoder_params, prior_params, z = self.forward(x, u)
+        log_px_zu = self.decoder.log_pdf(x, *decoder_params)
         log_px_z = self.decoder.log_pdf(x, *decoder_params)
         log_qz_xu = self.encoder.log_pdf(z, *encoder_params)
         log_pz_u = self.prior.log_pdf(z, *prior_params)
@@ -277,6 +295,7 @@ class iVAE(nn.Module):
         self.slope = slope
         self.anneal_params = anneal
         
+        
         if torch.cuda.is_available():
             device = 'cuda:0'
         else:
@@ -296,7 +315,8 @@ class iVAE(nn.Module):
             self.encoder_dist = Normal(device=device)
         else:
             self.encoder_dist = encoder
-
+        # causal adjacency matrix B
+        
         # prior_params
         self.prior_mean = torch.zeros(1).to(device)
         self.logl = MLP(self.aux_dim, self.latent_dim, hidden_dim, n_layers, activation=activation, slope=slope, device=device)
@@ -304,19 +324,33 @@ class iVAE(nn.Module):
         self.f = MLP(self.latent_dim, self.data_dim, hidden_dim, n_layers, activation=activation, slope=slope, device=device)
         self.decoder_var = .01 * torch.ones(1).to(device)
         # encoder params
-        self.g = MLP(self.data_dim + self.aux_dim, self.latent_dim, hidden_dim, n_layers, activation=activation, slope=slope,
+        self.g = MLP(self.data_dim, self.latent_dim, hidden_dim, n_layers, activation=activation, slope=slope,
                      device=device)
-        self.logv = MLP(self.data_dim + self.aux_dim, self.latent_dim, hidden_dim, n_layers, activation=activation, slope=slope,
+        self.logv = MLP(self.data_dim, self.latent_dim, hidden_dim, n_layers, activation=activation, slope=slope,
                         device=device)
+        
+        #self.decoder = StateTransitionDecoder(args, layers=3, latent_dim=20, action_dim=20, state_dim=args.d_L, state_embed_dim=20)
+        
+        # generate parameters by time index
 
-        self.apply(weights_init)
-
+        self.n_tparams = 0
+        self.n_tparams = 0
+        for name, param in self.named_parameters():
+            if not name.startswith('logl'):
+                self.n_tparams += param.numel()
+                
+        print('Number of parameters need to be predicted by t: {}'.format(self.n_tparams))
+            
+        self.f_t2theta = MLP(1, self.n_tparams, self.n_tparams//2, n_layers, activation=activation, slope=slope,
+                        device=device)
+        
+        self.B = torch.randn(self.data_dim, self.data_dim).to(device)   
+    
         self._training_hyperparams = [1., 1., 1., 1., 1]
-
-    def encoder_params(self, x, u):
-        xu = torch.cat((x, u), 1)
-        g = self.g(xu)
-        logv = self.logv(xu)
+        
+    def encoder_params(self, x):
+        g = self.g(x)
+        logv = self.logv(x)
         return g, logv.exp()
 
     def decoder_params(self, s):
@@ -328,19 +362,53 @@ class iVAE(nn.Module):
         return self.prior_mean, logl.exp()
 
     def forward(self, x, u):
-
+        
         prior_params = self.prior_params(u)
-        encoder_params = self.encoder_params(x, u)
+        encoder_params = self.encoder_params(x)
         z = self.encoder_dist.sample(*encoder_params)
         decoder_params = self.decoder_params(z)
         return decoder_params, encoder_params, z, prior_params
+    
+    def forward_t(self, x, u):
+        decoder_params_list = []
+        g_list = []
+        v_list = []
+        z_list = []
+        prior_params_list = []
+        batch_size = x.size(0)
+        tparams = self.f_t2theta(u)
+        
+        for i in range(batch_size):
+            start = 0
+            for name, param in self.named_parameters():
+                if not name.startswith(('logl', 'f_t2theta')):
+                    try:
+                        param.data = tparams[i, start:start + param.numel()].view(param.shape)
+                    except Exception:
+                        import pdb; pdb.set_trace()
+                    start += param.numel()
+                    
+            decoder_params, (g, v), z, prior_params = self.forward(x[i], u[i])
 
+            decoder_params_list.append(decoder_params)
+            g_list.append(g)
+            v_list.append(v)
+            z_list.append(z)
+            prior_params_list.append(prior_params)
+        
+        decoder_params_concat = tuple(torch.stack(elements, dim=0) for elements in zip(*decoder_params_list))
+        g_concat = torch.stack(g_list, dim=0)
+        v_concat = torch.stack(v_list, dim=0)
+        z_concat = torch.stack(z_list, dim=0)
+
+        prior_params_concat = tuple(torch.stack(elements, dim=0) for elements in zip(*prior_params_list))
+        return decoder_params_concat, (g_concat, v_concat), z_concat, prior_params_concat
+        
     def elbo(self, x, u):
-        decoder_params, (g, v), z, prior_params = self.forward(x, u)
-        log_px_z = self.decoder_dist.log_pdf(x, *decoder_params)
+        decoder_params, (g, v), z, prior_params = self.forward_t(x, u)
+        log_px_zu = self.decoder_dist.log_pdf(x, *decoder_params)
         log_qz_xu = self.encoder_dist.log_pdf(z, g, v)
         log_pz_u = self.prior_dist.log_pdf(z, *prior_params)
-
         if self.anneal_params:
             a, b, c, d, N = self._training_hyperparams
             M = z.size(0)
@@ -349,12 +417,11 @@ class iVAE(nn.Module):
             log_qz = torch.logsumexp(log_qz_tmp.sum(dim=-1), dim=1, keepdim=False) - np.log(M * N)
             log_qz_i = (torch.logsumexp(log_qz_tmp, dim=1, keepdim=False) - np.log(M * N)).sum(dim=-1)
 
-            return (a * log_px_z - b * (log_qz_xu - log_qz) - c * (log_qz - log_qz_i) - d * (
+            return (a * log_px_zu - b * (log_qz_xu - log_qz) - c * (log_qz - log_qz_i) - d * (
                     log_qz_i - log_pz_u)).mean(), z
 
         else:
-            print(log_px_z.mean(), log_pz_u.mean(), log_qz_xu.mean())
-            return (log_px_z + log_pz_u - log_qz_xu).mean(), z
+            return -(log_px_zu + log_pz_u - log_qz_xu).mean(), z
 
     def anneal(self, N, max_iter, it):
         thr = int(max_iter / 1.6)
